@@ -1,0 +1,188 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main, staging]
+  workflow_dispatch:
+
+# Never let two deploys of the same target overlap, and never cancel one
+# mid-flight — a half-uploaded bundle is worse than a queued run.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: '22'
+
+jobs:
+  config:
+    name: Resolve environment
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.resolve.outputs.environment }}
+      dataset: ${{ steps.resolve.outputs.dataset }}
+      studio_hostname: ${{ steps.resolve.outputs.studio_hostname }}
+      studio_title: ${{ steps.resolve.outputs.studio_title }}
+      studio_app_id: ${{ steps.resolve.outputs.studio_app_id }}
+      app_title: ${{ steps.resolve.outputs.app_title }}
+      app_id: ${{ steps.resolve.outputs.app_id }}
+    steps:
+      # The single place where a branch maps to an environment. `main` and
+      # `staging` deploy to separate Studios and separate apps so that a staging
+      # deploy can never overwrite production.
+      - name: Resolve per-branch configuration
+        id: resolve
+        env:
+          # Passed as env rather than interpolated into the script: branch names
+          # are attacker-controlled on forks.
+          BRANCH: ${{ github.ref_name }}
+          STUDIO_HOSTNAME: ${{ vars.SANITY_STUDIO_HOSTNAME }}
+          STUDIO_TITLE: ${{ vars.SANITY_STUDIO_TITLE }}
+          STUDIO_APP_ID: ${{ vars.SANITY_STUDIO_APP_ID }}
+          STUDIO_APP_ID_STAGING: ${{ vars.SANITY_STUDIO_APP_ID_STAGING }}
+          APP_TITLE: ${{ vars.SANITY_APP_TITLE }}
+          APP_ID: ${{ vars.SANITY_APP_ID }}
+          APP_ID_STAGING: ${{ vars.SANITY_APP_ID_STAGING }}
+        run: |
+          case "$BRANCH" in
+            main)
+              environment=production
+              dataset=production
+              studio_hostname="$STUDIO_HOSTNAME"
+              studio_title="$STUDIO_TITLE"
+              studio_app_id="$STUDIO_APP_ID"
+              app_title="$APP_TITLE"
+              app_id="$APP_ID"
+              ;;
+            staging)
+              environment=staging
+              dataset=staging
+              studio_hostname="$STUDIO_HOSTNAME-staging"
+              studio_title="$STUDIO_TITLE (Staging)"
+              studio_app_id="$STUDIO_APP_ID_STAGING"
+              app_title="$APP_TITLE (Staging)"
+              app_id="$APP_ID_STAGING"
+              ;;
+            *)
+              echo "::error::Branch '$BRANCH' has no deploy environment mapped"
+              exit 1
+              ;;
+          esac
+
+          {
+            echo "environment=$environment"
+            echo "dataset=$dataset"
+            echo "studio_hostname=$studio_hostname"
+            echo "studio_title=$studio_title"
+            echo "studio_app_id=$studio_app_id"
+            echo "app_title=$app_title"
+            echo "app_id=$app_id"
+          } >>"$GITHUB_OUTPUT"
+
+          echo "Deploying branch '$BRANCH' to $environment (dataset: $dataset)" >>"$GITHUB_STEP_SUMMARY"
+
+  verify:
+    name: Lint and typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm lint
+
+      - run: pnpm typecheck
+
+  deploy-studio:
+    name: Deploy Studio (${{ needs.config.outputs.environment }})
+    needs: [config, verify]
+    runs-on: ubuntu-latest
+    env:
+      # Project-level robot token with deploy permission.
+      SANITY_AUTH_TOKEN: ${{ secrets.SANITY_STUDIO_DEPLOY_TOKEN }}
+      SANITY_STUDIO_PROJECT_ID: ${{ vars.SANITY_PROJECT_ID }}
+      SANITY_STUDIO_DATASET: ${{ needs.config.outputs.dataset }}
+      SANITY_STUDIO_TITLE: ${{ needs.config.outputs.studio_title }}
+      SANITY_STUDIO_HOSTNAME: ${{ needs.config.outputs.studio_hostname }}
+      SANITY_STUDIO_APP_ID: ${{ needs.config.outputs.studio_app_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Check required configuration
+        run: |
+          missing=0
+          for name in SANITY_AUTH_TOKEN SANITY_STUDIO_PROJECT_ID SANITY_STUDIO_DATASET SANITY_STUDIO_HOSTNAME; do
+            if [ -z "${!name}" ]; then
+              echo "::error::$name is not set"
+              missing=1
+            fi
+          done
+          exit $missing
+
+      # `sanity deploy` builds before uploading, so no separate build step.
+      # --url is the hostname, e.g. "my-studio" -> my-studio.sanity.studio
+      - name: Deploy
+        run: pnpm --filter studio exec sanity deploy --yes --url "$SANITY_STUDIO_HOSTNAME"
+
+  deploy-app:
+    name: Deploy App SDK app (${{ needs.config.outputs.environment }})
+    needs: [config, verify]
+    runs-on: ubuntu-latest
+    env:
+      # Organization-level robot token with the "Manage SDK Apps" permission.
+      # This is a different token to the Studio's project-level one.
+      SANITY_AUTH_TOKEN: ${{ secrets.SANITY_APP_DEPLOY_TOKEN }}
+      SANITY_APP_PROJECT_ID: ${{ vars.SANITY_PROJECT_ID }}
+      SANITY_APP_DATASET: ${{ needs.config.outputs.dataset }}
+      SANITY_APP_ORGANIZATION_ID: ${{ vars.SANITY_ORGANIZATION_ID }}
+      SANITY_APP_TITLE: ${{ needs.config.outputs.app_title }}
+      SANITY_APP_ID: ${{ needs.config.outputs.app_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Check required configuration
+        run: |
+          missing=0
+          for name in SANITY_AUTH_TOKEN SANITY_APP_PROJECT_ID SANITY_APP_DATASET SANITY_APP_ORGANIZATION_ID SANITY_APP_TITLE; do
+            if [ -z "${!name}" ]; then
+              echo "::error::$name is not set"
+              missing=1
+            fi
+          done
+          # An unattended deploy can only create an app when the organization has
+          # none. Once one exists the CLI needs to be told which to target, and
+          # fails rather than guessing — so the first deploy per environment has
+          # to be run interactively.
+          if [ -z "$SANITY_APP_ID" ]; then
+            echo "::warning::SANITY_APP_ID is not set for this environment. If the organization already has an SDK app, this deploy will fail. Run 'sanity deploy' locally once to create the app, then set the app ID repository variable."
+          fi
+          exit $missing
+
+      # --title is required for unattended app deploys, otherwise the CLI prompts.
+      - name: Deploy
+        run: pnpm --filter app exec sanity deploy --yes --title "$SANITY_APP_TITLE"
