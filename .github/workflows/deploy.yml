@@ -146,6 +146,8 @@ jobs:
       # Persist the resolved application ID back to repo variables so future
       # runs (and the app deploy) reuse the same app instead of creating a new one.
       - name: Extract app ID
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           app_id=$(jq -r '.target.applicationId' <deploy-result.json)
           if [ -z "$app_id" ] || [ "$app_id" = "null" ]; then
