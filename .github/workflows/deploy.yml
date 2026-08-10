@@ -138,7 +138,17 @@ jobs:
       # `sanity deploy` builds before uploading, so no separate build step.
       # --url is the hostname, e.g. "my-studio" -> my-studio.sanity.studio
       - name: Deploy
-        run: pnpm --filter studio exec sanity deploy --yes --url "$SANITY_STUDIO_HOSTNAME"
+        run: pnpm --filter studio exec sanity deploy --yes --url "$SANITY_STUDIO_HOSTNAME" --json >> "$GITHUB_OUTPUT"
+      
+      - name: Extract app ID
+        run: |
+          app_id=$(jq -r '.target.applicationId' < "$GITHUB_OUTPUT")
+          if ${{ needs.config.outputs.environment }} == "production"; then
+            gh variable set SANITY_APP_ID "$app_id"
+          else
+            gh variable set SANITY_APP_ID_STAGING "$app_id"
+          fi
+          echo "app_id=$app_id"
 
   deploy-app:
     name: Deploy App SDK app (${{ needs.config.outputs.environment }})
@@ -174,13 +184,6 @@ jobs:
               missing=1
             fi
           done
-          # An unattended deploy can only create an app when the organization has
-          # none. Once one exists the CLI needs to be told which to target, and
-          # fails rather than guessing — so the first deploy per environment has
-          # to be run interactively.
-          if [ -z "$SANITY_APP_ID" ]; then
-            echo "::warning::SANITY_APP_ID is not set for this environment. If the organization already has an SDK app, this deploy will fail. Run 'sanity deploy' locally once to create the app, then set the app ID repository variable."
-          fi
           exit $missing
 
       # --title is required for unattended app deploys, otherwise the CLI prompts.
