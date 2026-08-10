@@ -12,7 +12,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  NODE_VERSION: '22'
+  NODE_VERSION: '24'
 
 jobs:
   config:
@@ -137,18 +137,28 @@ jobs:
 
       # `sanity deploy` builds before uploading, so no separate build step.
       # --url is the hostname, e.g. "my-studio" -> my-studio.sanity.studio
+      # --json prints the result as JSON on stdout; capture it to a file (NOT
+      # $GITHUB_OUTPUT, which only accepts key=value lines) so the next step can
+      # parse it. Build progress goes to stderr and is left on the console.
       - name: Deploy
-        run: pnpm --filter studio exec sanity deploy --yes --url "$SANITY_STUDIO_HOSTNAME" --json >> "$GITHUB_OUTPUT"
-      
+        run: pnpm --filter studio exec sanity deploy --yes --url "$SANITY_STUDIO_HOSTNAME" --json >deploy-result.json
+
+      # Persist the resolved application ID back to repo variables so future
+      # runs (and the app deploy) reuse the same app instead of creating a new one.
       - name: Extract app ID
         run: |
-          app_id=$(jq -r '.target.applicationId' < "$GITHUB_OUTPUT")
-          if ${{ needs.config.outputs.environment }} == "production"; then
-            gh variable set SANITY_APP_ID "$app_id"
-          else
-            gh variable set SANITY_APP_ID_STAGING "$app_id"
+          app_id=$(jq -r '.target.applicationId' <deploy-result.json)
+          if [ -z "$app_id" ] || [ "$app_id" = "null" ]; then
+            echo "::error::Could not read applicationId from deploy output"
+            cat deploy-result.json
+            exit 1
           fi
-          echo "app_id=$app_id"
+          if [ "${{ needs.config.outputs.environment }}" = "production" ]; then
+            gh variable set SANITY_APP_ID --body "$app_id"
+          else
+            gh variable set SANITY_APP_ID_STAGING --body "$app_id"
+          fi
+          echo "app_id=$app_id" >>"$GITHUB_STEP_SUMMARY"
 
   deploy-app:
     name: Deploy App SDK app (${{ needs.config.outputs.environment }})
