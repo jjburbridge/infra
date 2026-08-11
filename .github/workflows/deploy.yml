@@ -135,19 +135,11 @@ jobs:
           done
           exit $missing
 
-      # `sanity deploy` builds before uploading, so no separate build step.
-      # --url is the hostname, e.g. "my-studio" -> my-studio.sanity.studio
-      # --json prints the result as JSON on stdout; capture it to a file (NOT
-      # $GITHUB_OUTPUT, which only accepts key=value lines) so the next step can
-      # parse it. Build progress goes to stderr and is left on the console.
+    
       - name: Deploy
         run: pnpm --filter studio exec sanity deploy --yes --url "$SANITY_STUDIO_HOSTNAME" --json >deploy-result.json
 
-      # Persist the resolved application ID back to repo variables so future
-      # runs (and the app deploy) reuse the same app instead of creating a new one.
       - name: Extract app ID
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           app_id=$(jq -r '.target.applicationId' <deploy-result.json)
           if [ -z "$app_id" ] || [ "$app_id" = "null" ]; then
