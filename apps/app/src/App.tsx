@@ -15,7 +15,7 @@ const sanityConfigs: SanityConfig[] = [
 
 function Loading() {
   return (
-    <Flex justify="center" align="center" height="fill" style={{width: '100vw'}}>
+    <Flex justify="center" align="center" height="fill" style={{width: '100vw' color: 'red'}}>
       <Spinner />
     </Flex>
   )
