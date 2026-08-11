@@ -7,7 +7,7 @@ A pnpm workspace containing two Sanity applications that share one content lake:
 | `apps/studio` | Sanity Studio — schema definitions and editing UI  | http://localhost:3333   |
 | `apps/app`    | Custom app built on the Sanity App SDK             | http://localhost:3334   |
 
-Both point at Sanity project `j6kaz436`, dataset `production`.
+Both point at the same Sanity project and, by default, the `production` dataset.
 
 ## Requirements
 
@@ -65,9 +65,11 @@ Queries only get typed if they are assigned to a variable via `defineQuery` or t
 
 ## Configuration
 
-Project ID, dataset, and titles come from environment variables, with defaults in
-`apps/studio/env.ts` and `apps/app/src/env.ts` so local development works with no
-`.env` file. Copy `.env.example` in either workspace to `.env` to override.
+Project ID, dataset, and titles come from environment variables, resolved in
+`apps/studio/env.ts` and `apps/app/src/env.ts`. The project ID is required — each app
+throws on startup if it is unset — while dataset and title fall back to sensible
+defaults. Copy `.env.example` in either workspace to `.env` and set at least the
+project ID for local development.
 
 Only prefixed variables are inlined into the browser bundle at build time:
 `SANITY_STUDIO_*` for the Studio, `SANITY_APP_*` for the app.
@@ -87,35 +89,65 @@ Only prefixed variables are inlined into the browser bundle at build time:
 
 ## Deploying
 
-Locally, from within either workspace directory:
+Deployment is driven by a single GitHub Actions workflow,
+[`.github/workflows/deploy.yml`](.github/workflows/deploy.yml). That workflow is the
+supported way to ship both apps; the local commands further down exist mainly for the
+one-time app bootstrap and for previewing.
 
-```bash
-pnpm --filter studio exec sanity deploy --url my-studio      # → my-studio.sanity.studio
-pnpm --filter app exec sanity deploy --title "My App"        # → Sanity dashboard
+### The `Deploy` workflow
+
+**Triggers**
+
+- Every push to `main` or `staging`.
+- Manual runs from **Actions → Deploy → Run workflow** (`workflow_dispatch`).
+
+Runs are serialised per branch by a concurrency group (`deploy-${{ github.ref }}`) and
+are never cancelled mid-flight — a half-uploaded bundle is worse than a queued run.
+
+**Job pipeline**
+
+```
+config ──┐
+         ├─> deploy-studio
+verify ──┤
+         └─> deploy-app
 ```
 
-`sanity deploy` builds before uploading, so there is no separate build step.
+| Job            | What it does                                                                                                   |
+| -------------- | ------------------------------------------------------------------------------------------------------------- |
+| `config`       | Maps the branch to an environment, dataset, and deploy targets. Single source of truth; every deploy job reads its outputs. |
+| `verify`       | Installs once, then runs `pnpm lint` and `pnpm typecheck`. Runs for every branch.                              |
+| `deploy-studio`| Builds and deploys the Studio to `<hostname>.sanity.studio`.                                                   |
+| `deploy-app`   | Builds and deploys the App SDK app to the Sanity dashboard.                                                    |
 
-### Continuous deployment
+`config` and `verify` run in parallel (`verify` does not depend on `config`). Both
+deploy jobs wait on *both* of them, but not on each other, so a Studio failure never
+blocks the app and vice-versa. The Node version is pinned centrally via the
+`NODE_VERSION` workflow env (currently `24`).
 
-`.github/workflows/deploy.yml` runs on every push to `main` or `staging` (and via
-manual dispatch). It resolves the target environment, lints and typechecks once, then
-deploys the Studio and the app as two independent jobs, so a failure in one does not
-block the other.
+Each deploy job first runs a **Check required configuration** step that fails fast with
+a named `::error::` if any required variable or secret is missing, rather than deploying
+something half-configured.
 
-#### Branch to environment mapping
+The Studio's **Deploy** step runs `sanity deploy … --json` and the following
+**Extract app ID** step reads `.target.applicationId` from that output and writes it to
+the job summary — handy for confirming which application a run targeted.
 
-The `config` job is the only place this mapping lives; every other job reads its
-outputs. Each branch gets its own dataset *and* its own deploy targets, so a staging
-deploy can never overwrite production.
+### Branch → environment mapping
+
+The `config` job is the only place this mapping lives. Each branch gets its own dataset
+*and* its own deploy targets, so a staging deploy can never overwrite production.
 
 | Branch    | Dataset      | Studio hostname            | App title              |
 | --------- | ------------ | -------------------------- | ---------------------- |
 | `main`    | `production` | `<hostname>`               | `<title>`              |
 | `staging` | `staging`    | `<hostname>-staging`       | `<title> (Staging)`    |
 
-Pushing any other branch fails with an explicit error rather than guessing an
-environment.
+Branch names are read into the script as env vars rather than interpolated into it,
+since branch names are attacker-controlled on forks. Pushing any other branch fails with
+an explicit error rather than guessing an environment.
+
+### Required configuration
 
 Configure these in **Settings → Secrets and variables → Actions**.
 
@@ -123,8 +155,8 @@ Repository **variables** (not secret):
 
 | Variable                        | Example                   |
 | ------------------------------- | ------------------------- |
-| `SANITY_PROJECT_ID`             | `j6kaz436`                |
-| `SANITY_ORGANIZATION_ID`        | `on85MEGl3`               |
+| `SANITY_PROJECT_ID`             | your Sanity project ID    |
+| `SANITY_ORGANIZATION_ID`        | your Sanity org ID        |
 | `SANITY_STUDIO_HOSTNAME`        | `app-studio-monorepo`     |
 | `SANITY_STUDIO_TITLE`           | `App Studio Monorepo`     |
 | `SANITY_APP_TITLE`              | `App Studio Monorepo App` |
@@ -145,9 +177,6 @@ Repository **secrets** — note these are two different tokens:
 App SDK deploys will not work with a project-level token. Create the org token under
 Manage → your organization → Settings → API → Robot tokens.
 
-Each deploy job fails fast with a named error if any required variable is missing,
-rather than deploying something half-configured.
-
 ### First deploy of each environment
 
 Studios and apps behave differently here.
@@ -156,21 +185,34 @@ The **Studio** is identified by hostname, so CI handles it automatically: if
 `<hostname>-staging` isn't registered yet, the deploy registers it without prompting.
 Nothing manual is needed.
 
-The **app** is identified only by its application ID. An unattended deploy can create
-an app when the organization has none, but once one exists the CLI will not guess which
-to target — it fails instead. So the first app deploy for each environment has to be
-run once interactively, which offers a "New application deployment" choice:
+The **app** is identified only by its application ID, and `deploy-app` *requires*
+`SANITY_APP_ID` (resolved to `SANITY_APP_ID` / `SANITY_APP_ID_STAGING` by branch) — the
+job fails its config check if it is unset. An unattended deploy can create an app when
+the organization has none, but once one exists the CLI will not guess which to target.
+So the first app deploy for each environment has to be run once interactively, which
+offers a "New application deployment" choice:
 
 ```bash
 cd apps/app
 SANITY_APP_DATASET=staging pnpm exec sanity deploy --title "My App (Staging)"
 ```
 
-Then pin the IDs it prints as the `SANITY_STUDIO_APP_ID`, `SANITY_STUDIO_APP_ID_STAGING`,
-`SANITY_APP_ID`, and `SANITY_APP_ID_STAGING` repository variables. The app deploy job
-warns when its ID is unset, since that run is likely to fail.
+Then pin the IDs it prints (and the one surfaced in the Studio job summary) as the
+`SANITY_STUDIO_APP_ID`, `SANITY_STUDIO_APP_ID_STAGING`, `SANITY_APP_ID`, and
+`SANITY_APP_ID_STAGING` repository variables so subsequent CI runs redeploy the same
+targets instead of failing.
 
-You can preview what any deploy would do without uploading anything:
+### Deploying locally
+
+From within either workspace directory:
+
+```bash
+pnpm --filter studio exec sanity deploy --url my-studio      # → my-studio.sanity.studio
+pnpm --filter app exec sanity deploy --title "My App"        # → Sanity dashboard
+```
+
+`sanity deploy` builds before uploading, so there is no separate build step. Preview
+what any deploy would do without uploading anything:
 
 ```bash
 pnpm --filter app exec sanity deploy --dry-run --title "My App"

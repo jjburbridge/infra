@@ -2,7 +2,7 @@ import {defineCliConfig} from 'sanity/cli'
 
 export default defineCliConfig({
   app: {
-    organizationId: process.env.SANITY_APP_ORGANIZATION_ID || 'on85MEGl3',
+    organizationId: process.env.SANITY_APP_ORGANIZATION_ID,
     entry: './src/App.tsx',
     title: process.env.SANITY_APP_TITLE || 'App Studio Monorepo App',
   },
