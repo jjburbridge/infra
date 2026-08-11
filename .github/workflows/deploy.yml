@@ -12,7 +12,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  NODE_VERSION: '24'
+  NODE_VERSION: "24"
 
 jobs:
   config:
@@ -155,11 +155,6 @@ jobs:
             cat deploy-result.json
             exit 1
           fi
-          if [ "${{ needs.config.outputs.environment }}" = "production" ]; then
-            gh variable set SANITY_APP_ID --body "$app_id"
-          else
-            gh variable set SANITY_APP_ID_STAGING --body "$app_id"
-          fi
           echo "app_id=$app_id" >>"$GITHUB_STEP_SUMMARY"
 
   deploy-app:
@@ -190,7 +185,7 @@ jobs:
       - name: Check required configuration
         run: |
           missing=0
-          for name in SANITY_AUTH_TOKEN SANITY_APP_PROJECT_ID SANITY_APP_DATASET SANITY_APP_ORGANIZATION_ID SANITY_APP_TITLE; do
+          for name in SANITY_AUTH_TOKEN SANITY_APP_PROJECT_ID SANITY_APP_DATASET SANITY_APP_ORGANIZATION_ID SANITY_APP_TITLE SANITY_APP_ID; do
             if [ -z "${!name}" ]; then
               echo "::error::$name is not set"
               missing=1
