@@ -11,7 +11,7 @@ Both point at the same Sanity project and, by default, the `production` dataset.
 
 ## Requirements
 
-- Node.js 20.19 or newer
+- Node.js 24 or newer
 - pnpm 10 (`corepack enable` picks up the pinned version from `packageManager`)
 - A Sanity account with access to the project (`npx sanity login`)
 
