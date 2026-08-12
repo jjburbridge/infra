@@ -17,7 +17,7 @@ export default defineCliConfig({
      * Minted on the first deploy. Pinning it makes redeploys target the same
      * Studio regardless of hostname changes.
      */
-    // appId: process.env.SANITY_STUDIO_APP_ID || '',
+     appId: process.env.SANITY_STUDIO_APP_ID || '',
   },
   typegen: {
     enabled: true,
